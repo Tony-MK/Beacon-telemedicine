@@ -287,7 +287,7 @@ DATABASE HELPERS
 ========================================================= */
 
 function loadDB(){
-
+  
   let saved =
     localStorage.getItem(DB_KEY);
 
@@ -494,67 +494,33 @@ document
   .getElementById("loginForm")
   .addEventListener(
     "submit",
-    event => window.beaconLogin(event)
+    login
   );
 
 
-function login(e){
-
+async function login(e){
   e.preventDefault();
+  const form = e.currentTarget;
+  const email = document.getElementById("loginEmail").value.trim().toLowerCase();
+  const password = document.getElementById("loginPassword").value;
+  const submitButton = form.querySelector('button[type="submit"], button:not([type])');
 
-  const email =
-    document
-      .getElementById("loginEmail")
-      .value
-      .trim()
-      .toLowerCase();
-
-  const password =
-    document
-      .getElementById("loginPassword")
-      .value;
-
-  const user =
-    db.users.find(
-      u=>
-        u.email.toLowerCase()===email &&
-        u.password===password
-    );
-
-  if(!user){
-
-    alert(
-      "Invalid email or password."
-    );
-
-    return;
+  if(submitButton) submitButton.disabled = true;
+  try{
+    const result = await apiRequest("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({email, password})
+    });
+    const user = cacheBackendUser(result.user);
+    localStorage.setItem(AUTH_TOKEN_KEY, result.token);
+    currentUser = user;
+    localStorage.setItem("beaconHopeCurrentUser", JSON.stringify(user));
+    openApp();
+  }catch(error){
+    alert(error.message || "Unable to sign in. Please try again.");
+  }finally{
+    if(submitButton) submitButton.disabled = false;
   }
-
-  if(!user.enabled){
-
-    alert(
-      "This account has been disabled. Please contact the administrator."
-    );
-
-    return;
-  }
-
-  if(user.mustChangePassword){
-
-    showMandatoryPasswordChange(user);
-
-    return;
-
-  }
-
-  currentUser=user;
-
-  localStorage.setItem(
-    "beaconHopeCurrentUser",
-    JSON.stringify(user)
-  );
-
-  openApp();
 }
 
 function showMandatoryPasswordChange(user){
@@ -627,7 +593,17 @@ function submitMandatoryPasswordChange(e,userId){
 }
 
 
-function logout(){
+async function logout(){
+
+  if(localStorage.getItem(AUTH_TOKEN_KEY)){
+    try{
+      await apiRequest("/auth/logout", {method: "POST"});
+    }catch(error){
+      if(error.status !== 401 && error.status !== 403){
+        console.error("API logout failed:", error);
+      }
+    }
+  }
 
   currentUser=null;
 
@@ -765,7 +741,7 @@ function showRegistration(){
 openModal();
 }
 
-function registerPatient(e){
+async function registerPatient(e){
 
 e.preventDefault();
 
@@ -810,57 +786,25 @@ return;
 
 }
 
-if(
-db.users.some(
-u=>u.email.toLowerCase()===email
-)
-){
+const form = e.currentTarget;
+const submitButton = form.querySelector('button[type="submit"], button:not([type])');
+if(submitButton) submitButton.disabled = true;
 
-
-alert(
-  "An account with this email already exists."
-);
-
-return;
-
+try{
+  const user = await apiRequest("/auth/register", {
+    method: "POST",
+    body: JSON.stringify({name, email, phone, address, password})
+  });
+  cacheBackendUser(user);
+  closeModal();
+  alert("Patient account created successfully. You can now sign in.");
+  document.getElementById("loginEmail").value = email;
+  document.getElementById("loginPassword").value = "";
+}catch(error){
+  alert(error.message || "Unable to create your account. Please try again.");
+}finally{
+  if(submitButton) submitButton.disabled = false;
 }
-
-const user={
-
-
-id:uid("patient"),
-
-name,
-
-email,
-
-password,
-
-phone,
-
-role:"patient",
-
-enabled:true,
-
-address,
-
-lat:null,
-
-lng:null,
-
-patientStatusOverride:null
-
-};
-
-db.users.push(user);
-
-saveDB();
-
-closeModal();
-
-alert(
-"Patient account created successfully. You can now sign in."
-);
 }
 
 /* =========================================================
@@ -8330,64 +8274,6 @@ localStorage.removeItem(
 }
 
 })();
-
-/* Authenticate account access through the Flask API. */
-window.beaconLogin = async function(event){
-  event.preventDefault();
-  const email = document.getElementById("loginEmail").value.trim().toLowerCase();
-  const password = document.getElementById("loginPassword").value;
-  const submitButton = event.currentTarget.querySelector('button[type="submit"], button:not([type])');
-
-  if(submitButton) submitButton.disabled = true;
-  try{
-    const result = await apiRequest("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({email, password})
-    });
-    const user = cacheBackendUser(result.user);
-    localStorage.setItem(AUTH_TOKEN_KEY, result.token);
-    currentUser = user;
-    localStorage.setItem("beaconHopeCurrentUser", JSON.stringify(user));
-    openApp();
-  }catch(error){
-    alert(error.message || "Unable to sign in. Please try again.");
-  }finally{
-    if(submitButton) submitButton.disabled = false;
-  }
-};
-
-window.registerPatient = async function(event){
-  event.preventDefault();
-  const name = document.getElementById("regName").value.trim();
-  const email = document.getElementById("regEmail").value.trim().toLowerCase();
-  const phone = document.getElementById("regPhone").value.trim();
-  const address = document.getElementById("regAddress").value.trim();
-  const password = document.getElementById("regPassword").value;
-  const passwordConfirmation = document.getElementById("regPassword2").value;
-
-  if(password !== passwordConfirmation){
-    alert("Passwords do not match.");
-    return;
-  }
-
-  const submitButton = event.currentTarget.querySelector('button[type="submit"], button:not([type])');
-  if(submitButton) submitButton.disabled = true;
-  try{
-    const user = await apiRequest("/auth/register", {
-      method: "POST",
-      body: JSON.stringify({name, email, phone, address, password})
-    });
-    cacheBackendUser(user);
-    closeModal();
-    alert("Patient account created successfully. You can now sign in.");
-    document.getElementById("loginEmail").value = email;
-    document.getElementById("loginPassword").value = "";
-  }catch(error){
-    alert(error.message || "Unable to create your account. Please try again.");
-  }finally{
-    if(submitButton) submitButton.disabled = false;
-  }
-};
 
 const savedAuthToken = localStorage.getItem(AUTH_TOKEN_KEY);
 if(savedAuthToken){

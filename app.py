@@ -4,7 +4,7 @@ Run `pip install -r requirements.txt`, then `python app.py`.
 Open http://127.0.0.1:5000/ for the frontend; API routes are under /api.
 """
 # Cell 2 - imports, config and a small SQLite document store
-import os
+import hashlib, os
 import sqlite3, json, threading, math, secrets, csv, io, datetime as dt
 from pathlib import Path
 from functools import wraps
@@ -28,6 +28,7 @@ DELIVERY_BANDS = [(3, 100), (5, 150), (10, 250), (15, 350), (20, 450), (25, 550)
 _lock = threading.RLock()
 _conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 _conn.execute("CREATE TABLE IF NOT EXISTS docs (col TEXT, id TEXT, data TEXT, PRIMARY KEY (col, id))")
+_conn.execute("CREATE TABLE IF NOT EXISTS revoked_tokens (token_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL)")
 
 def uid(prefix): return f"{prefix}_{secrets.token_hex(4)}"
 def now(): return dt.datetime.now().isoformat(timespec="seconds")
@@ -130,10 +131,18 @@ def auth(*roles):
             token = request.headers.get("Authorization", "").replace("Bearer ", "", 1)
             try: data = serializer.loads(token, max_age=12 * 3600)
             except (BadSignature, SignatureExpired): return err("Login required", 401)
+            token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            with _lock:
+                revoked = _conn.execute(
+                    "SELECT 1 FROM revoked_tokens WHERE token_hash=? AND expires_at>?",
+                    (token_hash, now()),
+                ).fetchone()
+            if revoked: return err("Login required", 401)
             user = get("users", data["id"])
             if not user or not user.get("enabled", True): return err("Account disabled", 403)
             if roles and user["role"] not in roles: return err(f"Not allowed for role '{user['role']}'", 403)
             g.user = user
+            g.auth_token = token
             return fn(*a, **kw)
         return wrapper
     return deco
@@ -185,7 +194,22 @@ def login():
     if not user or not check_password_hash(user["passwordHash"], d.get("password", "")):
         return err("Invalid email or password", 401)
     if not user.get("enabled", True): return err("Account disabled", 403)
-    return jsonify({"token": serializer.dumps({"id": user["id"]}), "user": public(user)})
+    return jsonify({"token": serializer.dumps({"id": user["id"], "jti": secrets.token_urlsafe(16)}),
+                    "user": public(user)})
+
+@app.post("/api/auth/logout")
+@auth()
+def logout():
+    token_hash = hashlib.sha256(g.auth_token.encode("utf-8")).hexdigest()
+    expires_at = (dt.datetime.now() + dt.timedelta(hours=12)).isoformat(timespec="seconds")
+    with _lock:
+        _conn.execute(
+            "INSERT OR REPLACE INTO revoked_tokens (token_hash, expires_at) VALUES (?, ?)",
+            (token_hash, expires_at),
+        )
+        _conn.execute("DELETE FROM revoked_tokens WHERE expires_at<=?", (now(),))
+        _conn.commit()
+    return jsonify({"status": "logged_out"})
 
 @app.get("/api/me")
 @auth()
